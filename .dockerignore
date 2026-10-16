@@ -1,0 +1,16 @@
+# What Docker never copies into an image. Secrets stay out (compose passes .env at run time).
+.env
+.git
+.venv
+.cache
+.claude
+**/__pycache__
+.pytest_cache
+.ruff_cache
+data
+eval
+dersler
+tests
+docs
+*.log
+CLAUDE.md

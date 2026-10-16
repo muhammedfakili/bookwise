@@ -1,0 +1,41 @@
+[project]
+name = "leadpilot"
+version = "0.1.0"
+description = "Lead qualification and booking agent: LangGraph, tool calling, human handoff, simulated-user evaluation"
+requires-python = ">=3.12"
+dependencies = [
+    "anthropic>=1.13.0",
+    "fastapi>=0.143.2",
+    "google-genai>=2.29.0",
+    "httpx>=0.28.1",
+    "langgraph>=1.0.0",
+    "langgraph-checkpoint-sqlite>=3.0.0",
+    "openai>=3.29.0",
+    "pydantic-settings>=2.15.0",
+    "uvicorn[standard]>=0.54.0",
+]
+
+[dependency-groups]
+dev = [
+    "matplotlib>=3.11.2",
+    "pytest>=9.1.1",
+    "ruff>=0.17.0",
+]
+ui = [
+    "httpx>=0.28.1",
+    "pandas>=2.3.0",
+    "streamlit>=1.66.0",
+]
+
+[tool.uv]
+default-groups = ["dev", "ui"]  # locally: everything
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
+
+[tool.ruff.lint]
+ignore = ["C408"]
