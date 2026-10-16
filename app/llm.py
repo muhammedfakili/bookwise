@@ -13,6 +13,7 @@ Each provider returns the same small dataclasses, so callers stay provider-free.
 from __future__ import annotations
 
 import json
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -118,6 +119,20 @@ class LLMProvider(Protocol):
         ...
 
 
+def json_schema(schema: type[BaseModel]) -> dict:
+    """The schema we send to a model: every property required (null still allowed).
+
+    With optional properties, constrained decoders are free to skip a field, and some do
+    (NVIDIA NIM left out `service` and `intent` details). Required-but-nullable makes the
+    model decide on every field. Defaults stay on the pydantic side, for parsing and tests.
+    """
+    spec = schema.model_json_schema()
+    for obj in [spec, *spec.get("$defs", {}).values()]:
+        if "properties" in obj:
+            obj["required"] = list(obj["properties"])
+    return spec
+
+
 class GeminiProvider:
     """Google Gemini. Free tier needs no credit card and no billing account.
 
@@ -152,7 +167,7 @@ class GeminiProvider:
             system_instruction=system,
             max_output_tokens=4_000,
             response_mime_type="application/json",
-            response_json_schema=schema.model_json_schema(),
+            response_json_schema=json_schema(schema),
             automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
         ))
         return self._answer(response)
@@ -304,29 +319,52 @@ class AnthropicProvider:
         return ToolTurn(text, calls, response.model, response.usage.input_tokens, response.usage.output_tokens)
 
 
-class NvidiaProvider:
-    """NVIDIA's hosted models (build.nvidia.com). Free for development -- set NVIDIA_API_KEY.
+class OpenAICompatProvider:
+    """Any API that speaks the OpenAI chat-completions format (NVIDIA NIM, and most hosted open models)."""
 
-    The API speaks the OpenAI format, so the official `openai` client works with a
-    different base URL.
-    """
-
-    name = "nvidia"
-    BASE_URL = "https://integrate.api.nvidia.com/v1"
+    name = "openai-compatible"
+    BASE_URL = ""
+    NATIVE_JSON_SCHEMA = False  # True: the API constrains output to a JSON schema itself
 
     def __init__(self, api_key: str, model: str) -> None:
         from openai import OpenAI
 
         self.model = model
-        self._client = OpenAI(base_url=self.BASE_URL, api_key=api_key, max_retries=_MAX_ATTEMPTS,
+        # The SDK's own retries wait a few seconds; a per-minute quota needs longer (see _complete).
+        self._client = OpenAI(base_url=self.BASE_URL, api_key=api_key, max_retries=2,
                               timeout=_TIMEOUT_MS / 1000 * 2)
 
+    MIN_INTERVAL = 0.0  # seconds between request starts, shared by every thread of the process
+    _pace_lock = threading.Lock()
+    _next_slot = 0.0
+
+    def _pace(self) -> None:
+        """Space requests out: some free tiers cut bursts (4 quick calls -> 429) but allow a steady flow."""
+        if not self.MIN_INTERVAL:
+            return
+        with OpenAICompatProvider._pace_lock:
+            now = time.monotonic()
+            wait = OpenAICompatProvider._next_slot - now
+            OpenAICompatProvider._next_slot = max(now, OpenAICompatProvider._next_slot) + self.MIN_INTERVAL
+        if wait > 0:
+            time.sleep(wait)
+
+    def _complete(self, messages: list[dict], **extra: object) -> object:
+        from openai import APITimeoutError, InternalServerError, RateLimitError
+
+        for attempt in range(_MAX_ATTEMPTS):
+            self._pace()
+            try:
+                return self._client.chat.completions.create(
+                    model=self.model, messages=messages, max_tokens=8_000, **extra)
+            except (RateLimitError, InternalServerError, APITimeoutError):
+                if attempt == _MAX_ATTEMPTS - 1:
+                    raise
+                time.sleep(_BACKOFF_SECONDS * (attempt + 1))  # 8, 16, 24 ... s: lets the minute window pass
+        raise RuntimeError("unreachable")
+
     def generate(self, system: str, prompt: str) -> LLMAnswer:
-        response = self._client.chat.completions.create(
-            model=self.model,
-            messages=[{"role": "system", "content": system}, {"role": "user", "content": prompt}],
-            max_tokens=8_000,  # room for the thinking plus the answer
-        )
+        response = self._complete([{"role": "system", "content": system}, {"role": "user", "content": prompt}])
         text = (response.choices[0].message.content or "").strip()
         if not text:
             raise LLMRefused(f"{self.model} returned no text (finish_reason={response.choices[0].finish_reason}).")
@@ -335,7 +373,16 @@ class NvidiaProvider:
                          usage.completion_tokens if usage else 0)
 
     def generate_structured(self, system: str, prompt: str, schema: type[BaseModel]) -> LLMAnswer:
-        hint = f"\n\nAnswer with JSON only, following this schema:\n{json.dumps(schema.model_json_schema())}"
+        if self.NATIVE_JSON_SCHEMA:
+            response = self._complete(
+                [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
+                response_format={"type": "json_schema", "json_schema": {
+                    "name": schema.__name__, "schema": json_schema(schema)}},
+            )
+            usage = response.usage
+            return LLMAnswer((response.choices[0].message.content or "").strip(), self.model,
+                             usage.prompt_tokens if usage else 0, usage.completion_tokens if usage else 0)
+        hint = f"\n\nAnswer with JSON only, following this schema:\n{json.dumps(json_schema(schema))}"
         answer = self.generate(system, prompt + hint)
         text = answer.text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
         return LLMAnswer(text, answer.model, answer.input_tokens, answer.output_tokens)
@@ -353,18 +400,31 @@ class NvidiaProvider:
                                          for c in m.tool_calls]
                 wire.append(msg)
             else:
-                wire.append({"role": "tool", "tool_call_id": m.tool_call_id, "content": m.text})
-        response = self._client.chat.completions.create(
-            model=self.model, messages=wire, max_tokens=8_000,
-            tools=[{"type": "function", "function": {"name": t.name, "description": t.description,
-                                                     "parameters": t.parameters}} for t in tools],
-        )
+                wire.append({"role": "tool", "tool_call_id": m.tool_call_id, "name": m.tool_name,
+                             "content": m.text})
+        response = self._complete(wire, tools=[
+            {"type": "function", "function": {"name": t.name, "description": t.description,
+                                              "parameters": t.parameters}} for t in tools])
         message = response.choices[0].message
         calls = [ToolCall(c.id, c.function.name, json.loads(c.function.arguments or "{}"))
                  for c in (message.tool_calls or [])]
         usage = response.usage
         return ToolTurn((message.content or "").strip(), calls, self.model,
                         usage.prompt_tokens if usage else 0, usage.completion_tokens if usage else 0)
+
+
+class NvidiaProvider(OpenAICompatProvider):
+    """NVIDIA's hosted NIM models (build.nvidia.com). Free for development -- set NVIDIA_API_KEY.
+
+    Rate-limited per minute but with no daily cap, which is what a 30-persona evaluation
+    of two agents needs (Gemini's free tier stops at 500 requests a day). Nemotron 3
+    Super follows a JSON schema natively and calls tools.
+    """
+
+    name = "nvidia"
+    BASE_URL = "https://integrate.api.nvidia.com/v1"
+    NATIVE_JSON_SCHEMA = True
+    MIN_INTERVAL = 3.5  # measured: 4 quick calls -> 429; eval traffic at one call / 2 s still saw some 429s
 
 
 _MISSING_KEY_HELP = {

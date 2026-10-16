@@ -11,12 +11,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = PROJECT_ROOT / "data"
 
-# Gemini Flash-Lite is free and fast, Claude is the paid upgrade, NVIDIA's hosted
-# models are free for development (we use one to play the customers in the eval).
+# Gemini Flash-Lite is free and fast (500 requests/day), Claude is the paid upgrade,
+# NVIDIA's hosted NIM models are free with no daily cap (the evaluation runs on them).
 DEFAULT_MODELS = {
     "gemini": "gemini-3.5-flash-lite",
     "anthropic": "claude-opus-5",
-    "nvidia": "nvidia/nemotron-3-ultra-550b-a55b",
+    "nvidia": "nvidia/nemotron-3-super-120b-a12b",
 }
 
 Provider = Literal["gemini", "anthropic", "nvidia"]

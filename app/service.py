@@ -32,10 +32,13 @@ class TurnResult:
 
 
 class ChatService:
-    def __init__(self, deps: Deps, agent: Agent, channels: dict[str, ChannelPort] | None = None) -> None:
+    def __init__(self, deps: Deps, agent: Agent, channels: dict[str, ChannelPort] | None = None,
+                 handoff_on_error: bool = True) -> None:
         self.deps = deps
         self.agent = agent
         self.channels = channels or {}
+        # The evaluation turns this off: a provider outage is not the agent's decision to hand off.
+        self.handoff_on_error = handoff_on_error
 
     def handle(self, conversation_id: str, text: str, channel: str = "web") -> TurnResult:
         deps = self.deps
@@ -51,6 +54,8 @@ class ChatService:
         try:
             reply = self.agent.respond(conversation_id, channel)
         except LLM_ERRORS as exc:
+            if not self.handoff_on_error:
+                raise
             reason = f"assistant error: {type(exc).__name__}"
             deps.handoffs.open(conversation_id, reason, f"Reason: {reason}. Model call failed: {exc}"[:500])
             deps.crm.upsert_lead(conversation_id, channel, {"status": "handoff", "status_reason": reason})

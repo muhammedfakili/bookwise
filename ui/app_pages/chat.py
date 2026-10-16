@@ -13,7 +13,8 @@ FIELDS = [("service", "Project"), ("zip_code", "ZIP"), ("timeline_weeks", "Start
 
 api = ApiClient()
 if "conversation_id" not in st.session_state:
-    st.session_state.conversation_id = None
+    # ?c=<id> opens an existing conversation (links from the team inbox, demos).
+    st.session_state.conversation_id = st.query_params.get("c")
     st.session_state.last_turn = None
 
 chat_col, info_col = st.columns([3, 2], gap="large")
@@ -23,6 +24,7 @@ with info_col, st.container(horizontal=True, vertical_alignment="center"):
     if st.button("New chat", icon=":material/add_comment:"):
         st.session_state.conversation_id = None
         st.session_state.last_turn = None
+        st.query_params.clear()
         st.rerun()
 
 conversation = None

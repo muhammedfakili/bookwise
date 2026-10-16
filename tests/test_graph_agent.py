@@ -84,7 +84,7 @@ def test_rejecting_slots_offers_new_ones_until_the_limit():
     state = {"lead": lead, "offered": ["2026-10-20T09:00:00"], "offer_rounds": 1}
     assert decide(state, a(intent="reject_slots"))[0] == "offer_slots"
     action, upd = decide({**state, "offer_rounds": 4}, a(intent="reject_slots"))
-    assert (action, upd["status_reason"]) == ("handoff", "no consultation time worked")
+    assert (action, upd["status_reason"]) == ("handoff", "no consultation time agreed")
 
 
 def test_booked_lead_rescheduling_goes_to_a_human():
@@ -115,16 +115,20 @@ def test_happy_path_books_and_writes_the_crm(graph_service):
     assert any(e.startswith("calendar.book") for e in replies[-1].events)
 
 
-def test_disqualified_lead_is_never_offered_a_slot(graph_service):
+def test_a_declined_lead_can_correct_a_fact_once(graph_service):
     svc = graph_service([
-        analysis(service="kitchen", zip_code="78704", timeline_weeks=2, budget_usd=8_000),
-        analysis(intent="choose_slot", chosen_slot=1, budget_usd=90_000),  # tries to talk their way in
+        analysis(service="kitchen", zip_code="78704", timeline_weeks=2, budget_usd=20_000),
+        analysis(budget_usd=30_000),  # "sorry, we checked: 30k"
+        analysis(budget_usd=8_000),  # declined again
+        analysis(budget_usd=90_000, intent="choose_slot", chosen_slot=1),  # no second chance
     ])
-    first = svc.handle("c1", "kitchen in 78704 asap, 8k")
+    first = svc.handle("c1", "kitchen in 78704 asap, 20k")
     assert first.action == "disqualify"
     assert "below $25,000" in first.lead["status_reason"]
-    second = svc.handle("c1", "ok fine my budget is 90k, book slot 1")
-    assert second.action == "follow_up"
+    second = svc.handle("c1", "actually it's 30k")
+    assert (second.action, svc.agent.state("c1")["stage"]) == ("ask", "qualifying")  # next: owner?
+    assert svc.handle("c1", "hmm, more like 8k").action == "disqualify"
+    assert svc.handle("c1", "ok 90k, book slot 1").action == "follow_up"
     assert svc.deps.calendar.for_conversation("c1") == []
 
 
@@ -177,3 +181,85 @@ def test_state_survives_a_restart(tmp_path):
     result = svc2.handle("c1", "in 3 weeks")
     assert svc2.agent.state("c1")["lead"] == {"service": "kitchen", "zip_code": "78704", "timeline_weeks": 3}
     assert "budget" in result.reply
+
+
+# ---------------------------------------------------------------- matching a chosen time without the LLM
+
+OFFER = ["2026-10-20T09:00:00", "2026-10-21T13:00:00", "2026-10-22T13:00:00"]  # Tue 9am, Wed 1pm, Thu 1pm
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("Wednesday 1 PM works for me, thanks!", 2),
+    ("tuesday please", 1),
+    ("Thu at 1 works", 3),
+    ("the 9am one", 1),
+    ("the second one", 2),
+    ("option 3", 3),
+    ("2", 2),
+    ("El jueves me viene bien", 3),
+    ("1 PM works", None),  # Wednesday or Thursday: ambiguous
+    ("Thursday Oct 22 at 9:00 AM works for me", None),  # Oct 22 is not offered here
+    ("Sure, let's lock the October 21 slot", 2),
+    ("the 22nd please", 3),
+    ("Friday at 10?", None),  # not offered
+    ("my budget is 45,000 and zip 78704", None),
+    ("call me at 512-555-0101", None),
+])
+def test_match_offered(text, expected):
+    from app.agents.graph_agent import match_offered
+
+    assert match_offered(text, OFFER) == expected
+
+
+def test_decide_books_from_the_text_when_the_model_gives_no_number():
+    lead = {**QUALIFIED, "name": "Ann", "phone": "5125550101"}
+    action, upd = decide({"lead": lead, "offered": OFFER}, a(intent="choose_slot"), "Wednesday 1 PM works")
+    assert (action, upd["slot"]) == ("book", OFFER[1])
+    action, upd = decide({"lead": lead, "offered": OFFER}, a(intent="choose_slot"), "hmm which is best?")
+    assert (action, upd.get("same_slots"), upd["offer_rounds"]) == ("offer_slots", True, 1)
+
+
+def test_two_thursdays_are_told_apart_by_the_date():
+    from app.agents.graph_agent import match_offered
+
+    offer = ["2026-10-22T09:00:00", "2026-10-23T13:00:00", "2026-10-29T09:00:00"]
+    assert match_offered("Thursday, Oct 22 at 9:00 AM works for me", offer) == 1
+    assert match_offered("Thursday at 9", offer) is None
+    assert match_offered("the 29th at 9am", offer) == 3
+
+
+@pytest.mark.parametrize(("text", "name", "phone"), [
+    ("Sarah Kim, 512-555-0106. Looking forward to it.", "Sarah Kim", "512-555-0106"),
+    ("I'm Mark Daniels and my number is (512) 555 0101", None, "512-555-0101"),
+    ("Mark Daniels 512.555.0101", "Mark Daniels", "512-555-0101"),
+    ("Hannah Lee, +1 512‑555‑0112", "Hannah Lee", "512-555-0112"),
+    ("budget 45,000, zip 78704", None, None),
+])
+def test_contact_from_text(text, name, phone):
+    from app.agents.graph_agent import contact_from_text
+
+    assert contact_from_text(text) == (name, phone)
+
+
+def test_decide_uses_the_phone_in_the_text_when_the_model_missed_it():
+    action, upd = decide({"lead": QUALIFIED}, a(), "Sarah Kim, 512-555-0106. Looking forward to it.")
+    assert action == "offer_slots"
+    assert (upd["lead"]["name"], upd["lead"]["phone"]) == ("Sarah Kim", "512-555-0106")
+
+
+def test_a_quote_request_from_a_lead_that_fails_the_policy_is_declined_not_escalated():
+    parents_house = {"service": "kitchen", "zip_code": "78757", "decision_maker": False}
+    action, upd = decide({"lead": parents_house}, a(intent="needs_human"), "Could you give me an estimate?")
+    assert action == "disqualify"
+    assert "not the property owner" in upd["status_reason"]
+
+
+def test_after_a_decline_a_discount_request_gets_a_polite_answer_not_a_person():
+    declined = {"stage": "disqualified", "lead": {**QUALIFIED, "budget_usd": 8_000}}
+    assert decide(declined, a(intent="needs_human"), "can't you do it cheaper?")[0] == "follow_up"
+    assert decide(declined, a(intent="complaint"), "this is ridiculous service")[0] == "handoff"
+
+
+def test_a_booked_customer_asking_for_a_quote_goes_to_a_person():
+    action, _ = decide({"stage": "booked", "lead": QUALIFIED}, a(intent="needs_human"), "send me a quote")
+    assert action == "handoff"

@@ -5,12 +5,15 @@
     uv run python -m eval.run_eval --agent graph --only b05 h07   # a few personas
 
 Each persona gets a fresh database, a frozen clock (Monday 2026-10-19 09:00) and a
-customer played by another model (NVIDIA Nemotron by default, so the agent is not
-talking to itself). The conversation ends when the customer says goodbye, a human
-takes over, or after --max-turns customer messages.
+customer played by an LLM with its own role prompt (Nemotron 3 Super on NVIDIA NIM, free;
+the same model as the agent, because it was the only free NIM model that stayed up for
+hours of runs -- outcomes are read from the database, never judged by the model). The
+conversation ends when the customer says goodbye, a human takes over, or after
+--max-turns customer messages.
 
-Scoring never asks an LLM: the outcome is read from the calendar, CRM and handoff
-tables and compared with the persona's label. Every model call is cached on disk
+Scoring never asks an LLM: the outcome is "booked" if a consultation was booked, else the
+agent's first final action (decline or hand off); bookings, CRM fields and handoffs are read
+from the database and compared with the persona's label. Every model call is cached on disk
 (eval/cache/), so re-running a finished tag is free and gives the same numbers; a
 new --tag gives a new, independent run.
 """
@@ -42,15 +45,27 @@ RUNS_DIR = EVAL_DIR / "runs"
 RESULTS_DIR = EVAL_DIR / "results"
 CLOCK = datetime(2026, 10, 19, 9, 0)
 END = "<END>"
+TERMINAL = {"book": "booked", "disqualify": "disqualified", "handoff": "handoff"}
+PERSONA_ATTEMPTS = 5
 
 
 class CachedLLM:
-    """Wraps a provider; identical calls (same tag) are answered from disk."""
+    """Wraps a provider; identical calls (same tag) are answered from disk.
+
+    Each entry also keeps how long the real call took, so a re-scored run (all answers
+    from the cache) still reports the latency the agent really had.
+    """
 
     def __init__(self, inner: LLMProvider, tag: str) -> None:
         self.inner, self.tag = inner, tag
         self.name, self.model = inner.name, inner.model
+        self._local = threading.local()
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+    def take_seconds(self) -> float | None:
+        """Model seconds spent by this thread since the last call (None if a cache entry had no timing)."""
+        spent, self._local.seconds = getattr(self._local, "seconds", 0.0), 0.0
+        return spent
 
     def _key(self, *parts: object) -> Path:
         blob = json.dumps([self.tag, self.model, *parts], sort_keys=True, default=str)
@@ -58,10 +73,20 @@ class CachedLLM:
 
     def _cached(self, path: Path, call: callable) -> dict:
         if path.exists():
-            return json.loads(path.read_text(encoding="utf-8"))
-        data = call()
-        path.write_text(json.dumps(data), encoding="utf-8")
-        return data
+            entry = json.loads(path.read_text(encoding="utf-8"))
+            if "answer" not in entry:  # older entries: the answer only, no timing
+                self._add(None)
+                return entry
+        else:
+            t0 = time.perf_counter()
+            entry = {"answer": call(), "seconds": round(time.perf_counter() - t0, 2)}
+            path.write_text(json.dumps(entry), encoding="utf-8")
+        self._add(entry["seconds"])
+        return entry["answer"]
+
+    def _add(self, seconds: float | None) -> None:
+        current = getattr(self._local, "seconds", 0.0)
+        self._local.seconds = None if current is None or seconds is None else current + seconds
 
     def generate(self, system: str, prompt: str) -> LLMAnswer:
         data = self._cached(self._key("gen", system, prompt),
@@ -95,6 +120,8 @@ other facts; if asked something not covered, give a plausible short answer):
 Rules:
 - Write ONLY your next chat message: 1-3 short sentences, like a real person typing.
 - Stay in character the whole time. Never mention being an AI, a simulation or these rules.
+- Never invent events that are not in your facts (payments, deposits, signed contracts, earlier \
+calls, promises the company made). If they decline you, accept it politely.
 - When the conversation has reached its natural end -- a consultation is confirmed, they told you \
 they can't help, they said a person will contact you, or you have nothing more to say -- reply \
 with exactly {end} and nothing else.
@@ -112,9 +139,9 @@ class Customer:
         system = SIM_SYSTEM.format(business="Brightline Renovations", sheet=self.persona.sheet,
                                    facts=self.persona.facts, end=END)
         text = self.llm.generate(system, prompt).text.strip().strip('"')
-        if END in text:
-            return None
-        return re.sub(r"^(You|Customer):\s*", "", text)
+        # Some models write a last message and <END> together: keep the message (the next turn ends).
+        text = re.sub(r"^(You|Customer):\s*", "", text.replace(END, "").strip())
+        return text or None
 
 
 @dataclass
@@ -124,7 +151,7 @@ class Result:
     outcome: str
     turns: int
     agent_calls: int
-    seconds_per_turn: float
+    seconds_per_turn: float | None  # model time per agent turn; None if the cache had no timing
     lead_status: str | None
     booked_start: str | None
     slot_ok: bool | None
@@ -132,7 +159,17 @@ class Result:
     crm_fields_total: int
     handoff_reason: str | None
     error: str | None
+    decisions: list[str]
     transcript: list[dict]
+
+    @property
+    def verdict(self) -> str | None:
+        """The agent's qualification call: booked or got to the slot stage = qualified."""
+        if self.booked_start or self.lead_status in ("qualified", "booked"):
+            return "qualified"
+        if "disqualified" in self.decisions or self.lead_status == "disqualified":
+            return "disqualified"
+        return None
 
 
 def _slot_ok(start: str, rule: dict) -> bool:
@@ -160,56 +197,67 @@ def _crm_score(lead: dict | None, want: dict) -> tuple[int, int]:
     return ok, len(want)
 
 
-def run_persona(persona: Persona, agent_kind: str, agent_llm: LLMProvider, sim_llm: LLMProvider,
+def run_persona(persona: Persona, agent_kind: str, agent_llm: CachedLLM, sim_llm: LLMProvider,
                 max_turns: int) -> Result:
     deps = build_deps(":memory:", llm=agent_llm, clock=lambda: CLOCK)
     agent = GraphAgent(deps) if agent_kind == "graph" else BaselineAgent(deps)
-    svc = ChatService(deps, agent)
+    svc = ChatService(deps, agent, handoff_on_error=False)
     customer = Customer(sim_llm, persona)
     cid = f"eval:{persona.id}"
     turns, calls, seconds, error = 0, 0, [], None
+    decisions: list[str] = []  # the agent's final actions in order (book, disqualify, handoff)
     try:
         for _ in range(max_turns):
             message = customer.next_message(deps.transcripts.history(cid))
             if message is None:
                 break
-            t0 = time.perf_counter()
+            agent_llm.take_seconds()
             result = svc.handle(cid, message)
-            seconds.append(time.perf_counter() - t0)
+            spent = agent_llm.take_seconds()
+            if spent is not None:
+                seconds.append(spent)
             turns += 1
             calls += result.llm_calls
+            if result.action in TERMINAL:
+                decisions.append(TERMINAL[result.action])
             if result.mode == "human":
                 break  # a person takes it from here
-    except LLM_ERRORS as exc:  # the simulator failed; the agent's own failures are handled by the service
-        error = f"simulator: {type(exc).__name__}: {exc}"[:300]
+    except LLM_ERRORS as exc:
+        # A provider outage (after all retries) on either side. Not scored; re-run the tag to retry.
+        error = f"{type(exc).__name__}: {exc}"[:300]
 
     booked = deps.calendar.for_conversation(cid)
     handoffs = deps.handoffs.for_conversation(cid)
     lead = deps.crm.get_lead(cid)
-    if booked:
+    if error:
+        outcome = "error"
+    elif booked:
         outcome = "booked"
+    elif decisions:
+        outcome = decisions[0]  # e.g. declined, then the customer argued and got a person: "disqualified"
     elif handoffs:
         outcome = "handoff"
     elif lead and lead["status"] == "disqualified":
         outcome = "disqualified"
     else:
         outcome = "unfinished"
-    agent_error = next((h["reason"] for h in handoffs if h["reason"].startswith("assistant error")), None)
     ok, total = _crm_score(lead, persona.crm) if outcome == "booked" else (0, len(persona.crm))
     return Result(
         persona=persona.id, expected=persona.expected, outcome=outcome, turns=turns, agent_calls=calls,
-        seconds_per_turn=round(statistics.mean(seconds), 2) if seconds else 0.0,
+        seconds_per_turn=round(statistics.mean(seconds), 2) if seconds else None,
         lead_status=lead["status"] if lead else None,
         booked_start=booked[0]["start"] if booked else None,
         slot_ok=_slot_ok(booked[0]["start"], persona.slot_rule) if booked else None,
         crm_fields_ok=ok, crm_fields_total=total,
         handoff_reason=handoffs[0]["reason"] if handoffs else None,
-        error=error or agent_error,
+        error=error,
+        decisions=decisions,
         transcript=deps.transcripts.history(cid),
     )
 
 
-def score(results: list[Result]) -> dict:
+def score(all_results: list[Result]) -> dict:
+    results = [r for r in all_results if not r.error]  # outages are reported, never scored
     n = len(results)
 
     def share(hits: int, total: int) -> float | None:
@@ -217,30 +265,30 @@ def score(results: list[Result]) -> dict:
 
     should_book = [r for r in results if r.expected == "booked"]
     qual_cases = [r for r in results if r.expected in ("booked", "disqualified")]
-    qual_hits = sum(
-        (r.expected == "booked") == (r.lead_status in ("qualified", "booked"))
-        and (r.expected != "disqualified" or r.lead_status == "disqualified")
-        for r in qual_cases)
+    qual_hits = sum(r.verdict == ("qualified" if r.expected == "booked" else "disqualified") for r in qual_cases)
     predicted_handoff = [r for r in results if r.handoff_reason]
     wrong_bookings = [r for r in results if r.booked_start and (r.expected != "booked" or r.slot_ok is False)]
     crm_ok = sum(r.crm_fields_ok for r in should_book)
     crm_total = sum(r.crm_fields_total for r in should_book)
     return {
         "conversations": n,
+        "errors_not_scored": [r.persona for r in all_results if r.error],
         "outcome_accuracy": share(sum(r.outcome == r.expected for r in results), n),
         "qualification_accuracy": share(qual_hits, len(qual_cases)),
         "booking_success": share(sum(r.outcome == "booked" for r in should_book), len(should_book)),
         "wrong_bookings": len(wrong_bookings),
         "wrong_booking_ids": [r.persona for r in wrong_bookings],
         "handoff_precision": share(sum(r.expected == "handoff" for r in predicted_handoff), len(predicted_handoff)),
+        "unneeded_handoffs": [r.persona for r in predicted_handoff if r.expected != "handoff"],
         "handoff_recall": share(sum(bool(r.handoff_reason) for r in results if r.expected == "handoff"),
                                 sum(r.expected == "handoff" for r in results)),
         "crm_field_accuracy": share(crm_ok, crm_total),
         "avg_customer_turns": round(statistics.mean(r.turns for r in results), 1),
         "avg_llm_calls_per_conversation": round(statistics.mean(r.agent_calls for r in results), 1),
-        "median_seconds_per_turn": round(statistics.median(r.seconds_per_turn for r in results if r.turns), 1),
+        "median_seconds_per_turn": (round(statistics.median(timed), 1)
+                                    if (timed := [r.seconds_per_turn for r in results if r.seconds_per_turn])
+                                    else None),
         "unfinished": [r.persona for r in results if r.outcome == "unfinished"],
-        "errors": [r.persona for r in results if r.error],
     }
 
 
@@ -272,12 +320,14 @@ def main() -> None:
     parser.add_argument("--only", nargs="*", help="persona id prefixes (e.g. b05 h07)")
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--max-turns", type=int, default=14)
+    parser.add_argument("--provider", default="nvidia", help="the agent's model provider")
+    parser.add_argument("--model", default="nvidia/nemotron-3-super-120b-a12b")
     parser.add_argument("--sim-provider", default="nvidia")
     parser.add_argument("--sim-model", default="nvidia/nemotron-3-super-120b-a12b")
     args = parser.parse_args()
 
     personas = [p for p in PERSONAS if not args.only or any(p.id.startswith(o) for o in args.only)]
-    agent_llm = CachedLLM(get_llm(), f"{args.tag}:{args.agent}")
+    agent_llm = CachedLLM(get_llm(args.provider, args.model), f"{args.tag}:{args.agent}")
     sim_llm = CachedLLM(get_llm(args.sim_provider, args.sim_model), f"{args.tag}:{args.agent}:sim")
     name = f"{args.agent}-{args.tag}" + ("-partial" if args.only else "")
     print(f"{name}: {len(personas)} personas, agent {agent_llm.model}, customers {sim_llm.model}")
@@ -285,7 +335,13 @@ def main() -> None:
     lock = threading.Lock()
 
     def one(p: Persona) -> Result:
-        r = run_persona(p, args.agent, agent_llm, sim_llm, args.max_turns)
+        # A provider outage mid-conversation: wait, then replay the conversation. Finished turns
+        # come back from the cache instantly, so it continues where it stopped.
+        for attempt in range(PERSONA_ATTEMPTS):
+            r = run_persona(p, args.agent, agent_llm, sim_llm, args.max_turns)
+            if not r.error or attempt == PERSONA_ATTEMPTS - 1:
+                break
+            time.sleep(60)
         with lock:
             flag = "ok " if r.outcome == r.expected else "BAD"
             print(f"  {flag} {p.id:24} expected {r.expected:12} got {r.outcome:12} {r.turns:2} turns"
