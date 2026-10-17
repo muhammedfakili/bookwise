@@ -424,7 +424,7 @@ class NvidiaProvider(OpenAICompatProvider):
     name = "nvidia"
     BASE_URL = "https://integrate.api.nvidia.com/v1"
     NATIVE_JSON_SCHEMA = True
-    MIN_INTERVAL = 3.5  # measured: 4 quick calls -> 429; eval traffic at one call / 2 s still saw some 429s
+    MIN_INTERVAL = 2.5  # measured: 4 quick calls -> 429; a steady call every 2.5 s ran 3 min with none
 
 
 _MISSING_KEY_HELP = {

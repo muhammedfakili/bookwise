@@ -5,9 +5,8 @@
     uv run python -m eval.run_eval --agent graph --only b05 h07   # a few personas
 
 Each persona gets a fresh database, a frozen clock (Monday 2026-10-19 09:00) and a
-customer played by an LLM with its own role prompt (Nemotron 3 Super on NVIDIA NIM, free;
-the same model as the agent, because it was the only free NIM model that stayed up for
-hours of runs -- outcomes are read from the database, never judged by the model). The
+customer played by a different model than the agent (agent: Gemma 4 26B; customers:
+Gemini 3.5 Flash-Lite; both free on the Gemini API, each with its own daily quota). The
 conversation ends when the customer says goodbye, a human takes over, or after
 --max-turns customer messages.
 
@@ -320,10 +319,10 @@ def main() -> None:
     parser.add_argument("--only", nargs="*", help="persona id prefixes (e.g. b05 h07)")
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--max-turns", type=int, default=14)
-    parser.add_argument("--provider", default="nvidia", help="the agent's model provider")
-    parser.add_argument("--model", default="nvidia/nemotron-3-super-120b-a12b")
-    parser.add_argument("--sim-provider", default="nvidia")
-    parser.add_argument("--sim-model", default="nvidia/nemotron-3-super-120b-a12b")
+    parser.add_argument("--provider", default="gemini", help="the agent's model provider")
+    parser.add_argument("--model", default="gemma-4-26b-a4b-it")
+    parser.add_argument("--sim-provider", default="gemini")
+    parser.add_argument("--sim-model", default="gemini-3.5-flash-lite")
     args = parser.parse_args()
 
     personas = [p for p in PERSONAS if not args.only or any(p.id.startswith(o) for o in args.only)]

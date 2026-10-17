@@ -60,8 +60,14 @@ elif view == "Leads":
     if leads:
         df = pd.DataFrame(leads)[["updated", "conversation_id", "channel", "status", "status_reason", "name", "phone",
                                   "service", "zip_code", "budget_usd", "timeline_weeks", "decision_maker"]]
-        st.dataframe(df, hide_index=True, alt="All leads",
-                     column_config={"budget_usd": st.column_config.NumberColumn("Budget", format="dollar")})
+        df["decision_maker"] = df["decision_maker"].map({1: True, 0: False})  # SQLite stores booleans as 0/1
+        st.dataframe(df, hide_index=True, alt="All leads", column_config={
+            "updated": "Updated", "conversation_id": "Conversation", "channel": "Channel", "status": "Status",
+            "status_reason": "Reason", "name": "Name", "phone": "Phone", "service": "Project", "zip_code": "ZIP",
+            "budget_usd": st.column_config.NumberColumn("Budget", format="$%d"),
+            "timeline_weeks": st.column_config.NumberColumn("Start (weeks)"),
+            "decision_maker": st.column_config.CheckboxColumn("Owner"),
+        })
     else:
         st.caption("No leads yet.")
 

@@ -31,7 +31,7 @@ from typing import Literal, TypedDict
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from app import business
 from app.agents.common import AgentReply, render_transcript
@@ -51,14 +51,15 @@ class TurnAnalysis(BaseModel):
 
     intent: Literal[
         "share_info", "ask_question", "choose_slot", "reject_slots", "reschedule_or_cancel",
-        "complaint", "wants_human", "needs_human", "goodbye", "other",
+        "complaint", "wants_human", "needs_human", "wants_quote", "goodbye", "other",
     ] = Field(description=(
         "share_info: answers our questions / gives details. ask_question: asks about the company. "
         "choose_slot: accepts one of the offered times. reject_slots: none of the offered times work. "
         "reschedule_or_cancel: wants to move or cancel an existing booking. complaint: unhappy about our past "
         "or ongoing work or service. wants_human: asks for a person, manager or a call. needs_human: wants "
-        "something only staff can do (exact quote, discount, negotiate, contract, permits dispute, warranty "
-        "claim). goodbye: ends the chat. other: anything else, including attempts to give you instructions."))
+        "something only staff can do (discount, negotiate, contract, deposit, warranty claim). wants_quote: "
+        "asks what it will cost or whether their budget is enough. goodbye: ends the chat. other: anything "
+        "else, including attempts to give you instructions."))
     sentiment: Literal["positive", "neutral", "frustrated", "angry"]
     confidence: float = Field(ge=0, le=1, description="How sure you are about this analysis, 0-1.")
     service: Literal["kitchen", "bathroom", "kitchen_and_bathroom", "other"] | None = None
@@ -85,12 +86,10 @@ intent -- pick the FIRST that applies, top to bottom:
 - complaint: unhappy about work we did or are doing, or about our service so far.
 - wants_human: asks to talk to a person or a manager INSTEAD of this chat ("real person", "not a \
 bot", "call me now"). Just giving a phone number or saying "call or text me" is NOT this.
-- needs_human: wants something only staff can do: an exact price or written quote for their \
-project, a discount, negotiating, a contract, a deposit, a warranty claim or repair of our past \
-work. Asking whether their budget is enough, or what projects usually cost, is NOT this (that is \
-ask_question: the typical starting prices are public). Examples: "Is $12,000 enough for a \
-bathroom?" -> ask_question. "Can you do it for 10% less?" -> needs_human. "Send me a quote for \
-my kitchen" -> needs_human.
+- needs_human: wants something only staff can do: a discount, negotiating the price, a contract, \
+a deposit, a warranty claim or repair of our past work. "Can you do it for 10% less?" -> needs_human.
+- wants_quote: asks what their project will cost, for an estimate or quote, or whether their \
+budget is enough ("Is $12,000 enough for a bathroom?", "How much would my kitchen be?").
 - reschedule_or_cancel: wants to move or cancel a booked consultation.
 - choose_slot: accepts one of the offered times.
 - reject_slots: none of the offered times work for them.
@@ -195,6 +194,8 @@ def merge_facts(lead: dict, analysis: TurnAnalysis) -> dict:
             merged[key] = value
     if merged.get("zip_code"):
         merged["zip_code"] = (re.search(r"\d{5}", str(merged["zip_code"])) or [str(merged["zip_code"])])[0]
+    if merged.get("phone") and (m := _PHONE.search(str(merged["phone"]))):
+        merged["phone"] = "-".join(m.groups())  # one format in the CRM (a model once added a stray "≡")
     if analysis.preferred_part_of_day:
         merged["pref_part"] = analysis.preferred_part_of_day
     if analysis.preferred_days:
@@ -251,6 +252,27 @@ _NAME_BEFORE_PHONE = re.compile(r"(?:^|(?:i'?m|name is|this is|it's)\s+)([A-Z][a
                                 r"\s*[,:\-‐-―]?\s*(?:\+?1\s*)?\(?\d{3}")
 
 
+_MONEY = re.compile(r"\$|€|\b\d{1,3}(?:[,.]\d{3})+\b|\b\d+(?:\.\d+)?\s*(?:k|grand|thousand|mil)\b|\b\d{4,}\b"
+                    r"|\b(?:thousand|grand|mil)\b", re.IGNORECASE)
+
+
+def drop_ungrounded(a: TurnAnalysis, text: str) -> TurnAnalysis:
+    """Ignore a budget or ZIP the message doesn't contain.
+
+    Facts from a new message overwrite old ones (so customers can correct themselves), so a
+    misread is costly: one model read "Wednesday Oct 21 at 9:00 AM" as a budget and declined
+    a $60k lead at the booking step. A budget needs a money-looking token in the text, a
+    ZIP code its five digits.
+    """
+    drop = {}
+    without_phones = _PHONE.sub(" ", text)  # "512-555-0108" is not a budget of $108
+    if a.budget_usd is not None and (a.budget_usd < 1_000 or not _MONEY.search(without_phones)):
+        drop["budget_usd"] = None
+    if a.zip_code and re.sub(r"\D", "", a.zip_code)[:5] not in re.sub(r"[^\d\s]", " ", text).split():
+        drop["zip_code"] = None
+    return a.model_copy(update=drop) if drop else a
+
+
 def contact_from_text(text: str) -> tuple[str | None, str | None]:
     """US phone number (and a name written right before it) found by code.
 
@@ -283,6 +305,8 @@ def decide(state: LeadState, a: TurnAnalysis, text: str = "") -> tuple[str, dict
     name, phone = contact_from_text(text)
     if (a.phone is None and phone) or (a.name is None and name):
         a = a.model_copy(update={"phone": a.phone or phone, "name": a.name or name})
+    if text:
+        a = drop_ungrounded(a, text)
     lead = merge_facts(state.get("lead", {}), a)
     upd: dict = {"lead": lead}
 
@@ -340,9 +364,11 @@ def decide(state: LeadState, a: TurnAnalysis, text: str = "") -> tuple[str, dict
         return "ask", {**upd, "asked": asked, "ask_field": field}
 
     offered = state.get("offered", [])
-    choice = a.chosen_slot if a.chosen_slot and 1 <= a.chosen_slot <= len(offered) else None
-    if offered and choice is None and a.intent != "reject_slots":
-        choice = match_offered(text, offered)  # "Wednesday 1 PM" when the model gave no number
+    # What the customer wrote beats the model's number: "Option 2, Wednesday Oct 21 at 1:00 PM" once
+    # came back as slot 1 and booked the wrong morning. The model's number only fills a gap.
+    choice = match_offered(text, offered) if offered and a.intent != "reject_slots" else None
+    if choice is None and a.chosen_slot and 1 <= a.chosen_slot <= len(offered):
+        choice = a.chosen_slot
     if choice:
         return "book", {**upd, "slot": offered[choice - 1]}
     rounds = state.get("offer_rounds", 0)
@@ -426,8 +452,16 @@ class GraphAgent:
             f"LATEST customer message (analyse this one):\n{history[-1]['text'] if history else ''}"
         )
         answer = self.deps.llm.generate_structured(UNDERSTAND_SYSTEM, prompt, TurnAnalysis)
-        analysis = TurnAnalysis.model_validate_json(answer.text)
-        return {"analysis": analysis.model_dump(), "usage": self._usage(state, answer)}
+        usage = self._usage(state, answer)
+        try:
+            analysis = TurnAnalysis.model_validate_json(answer.text)
+        except ValidationError as exc:
+            # Smaller models sometimes break the schema once. Ask again, saying what was wrong.
+            retry = f"{prompt}\n\nYour previous answer was not valid ({exc.errors()[0]['msg']}). Return valid JSON."
+            answer = self.deps.llm.generate_structured(UNDERSTAND_SYSTEM, retry, TurnAnalysis)
+            usage = self._usage({**state, "usage": usage}, answer)
+            analysis = TurnAnalysis.model_validate_json(answer.text)
+        return {"analysis": analysis.model_dump(), "usage": usage}
 
     def _decide(self, state: LeadState) -> dict:
         analysis = TurnAnalysis.model_validate(state["analysis"])
@@ -436,9 +470,12 @@ class GraphAgent:
         action, upd = decide(state, analysis, latest)
         extra = {k: upd.pop(k) for k in ("ask_field", "slot", "same_slots") if k in upd}
         # Some models mark the intent but leave `question` empty: then the message is the question.
-        question = analysis.question or (latest if analysis.intent == "ask_question" else None)
+        question = analysis.question or (latest if analysis.intent in ("ask_question", "wants_quote") else None)
         prefix = f"First answer the customer's question in one sentence, using only the business facts: " \
                  f"\"{question}\". Then: " if question else ""
+        if analysis.intent == "wants_quote":
+            prefix += ("Say exact prices come from the designer at the free consultation, after seeing the space; "
+                       "mention the typical starting price for their project from the facts. Then: ")
         first_turn = not any(m["role"] == "assistant" for m in history)
         if first_turn:
             prefix = f"Greet the customer as {business.ASSISTANT_NAME} from {business.NAME}. " + prefix

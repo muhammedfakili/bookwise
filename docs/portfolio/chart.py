@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 ROOT = Path(__file__).resolve().parents[2]
 RUNS = ROOT / "eval" / "runs"
 OUT = ROOT / "docs" / "portfolio" / "05-measured-results.png"
+CRM = "CRM fields right\n(booked leads)"
 
 
 def runs(agent: str) -> list[dict]:
@@ -34,6 +35,7 @@ def pooled(agent: str) -> dict:
     qual_cases = [r for r in results if r["expected"] in ("booked", "disqualified")]
     predicted = [r for r in results if r["handoff_reason"]]  # any handoff = work for the team
     expected_h = [r for r in results if r["expected"] == "handoff"]
+    booked = [r for r in should_book if r["booked_start"]]
     return {
         "n": len(results), "runs": len(runs(agent)),
         "Correct outcome": 100 * sum(r["outcome"] == r["expected"] for r in results) / len(results),
@@ -42,20 +44,22 @@ def pooled(agent: str) -> dict:
         "Booked when it should": 100 * sum(r["outcome"] == "booked" for r in should_book) / len(should_book),
         "Handoff precision": 100 * sum(r["expected"] == "handoff" for r in predicted) / max(len(predicted), 1),
         "Handoff recall": 100 * sum(bool(r["handoff_reason"]) for r in expected_h) / len(expected_h),
+        # Of the leads it booked: how many CRM fields hold exactly what the customer said.
+        CRM: 100 * sum(r["crm_fields_ok"] for r in booked) / sum(r["crm_fields_total"] for r in booked),
         "wrong": sum(1 for r in results if r["booked_start"] and (r["expected"] != "booked" or r["slot_ok"] is False)),
     }
 
 
 graph, base = pooled("graph"), pooled("baseline")
 metrics = ["Correct outcome", "Qualified correctly", "Booked when it should", "Handoff precision",
-           "Handoff recall"]
+           "Handoff recall", CRM]
 
 BG, FG, MUTED = "#0b0d10", "#f2f6fa", "#8fa0b4"
 BLUE, GREY = "#2f7fd4", "#5d6b7c"
 fig, ax = plt.subplots(figsize=(15.68, 6.98), dpi=100)
 fig.patch.set_facecolor(BG)
 ax.set_facecolor(BG)
-width = 0.36
+width = 0.38
 for i, m in enumerate(metrics):
     for offset, data, color in ((-width / 2, base, GREY), (width / 2, graph, BLUE)):
         v = data[m]
@@ -73,8 +77,8 @@ ax.bar(0, 0, color=BLUE, label=f"LeadPilot: LangGraph, rules in code  ·  {graph
 ax.legend(loc="upper right", bbox_to_anchor=(1.0, 1.13), frameon=False, labelcolor=FG, fontsize=13, ncol=2)
 fig.suptitle("30 simulated customers, same model, two agent designs", color=FG, fontsize=22, fontweight="bold",
              x=0.06, ha="left", y=0.96)
-fig.text(0.06, 0.875, f"{graph['n']} conversations per agent ({graph['runs']} runs) · 12 should book, 10 should be "
-         "declined, 8 should reach a person · agent: Nemotron 3 Super, customers: gpt-oss-20b (NVIDIA NIM, free)",
+fig.text(0.06, 0.875, f"{graph['n']} conversations per agent · 12 should book, 10 should be declined, 8 should "
+         "reach a person · agent: Gemma 4 26B, customers: Gemini 3.5 Flash-Lite (both free tier)",
          color=MUTED, fontsize=12, ha="left")
 fig.subplots_adjust(top=0.78, bottom=0.1, left=0.06, right=0.98)
 fig.savefig(OUT, facecolor=BG)

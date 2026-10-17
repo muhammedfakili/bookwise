@@ -71,7 +71,7 @@ def test_booking_needs_qualification_and_a_valid_choice():
     lead = {**QUALIFIED, "name": "Ann", "phone": "512 555 0101"}
     offered = ["2026-10-20T09:00:00", "2026-10-21T11:00:00"]
     assert decide({"lead": lead, "offered": offered}, a(intent="choose_slot", chosen_slot=2)) == (
-        "book", {"lead": lead, "low_conf_streak": 0, "slot": offered[1]})
+        "book", {"lead": {**lead, "phone": "512-555-0101"}, "low_conf_streak": 0, "slot": offered[1]})
     action, _ = decide({"lead": lead, "offered": offered}, a(intent="choose_slot", chosen_slot=7))
     assert action == "offer_slots"
     unqualified = {**lead, "budget_usd": 5_000}
@@ -263,3 +263,71 @@ def test_after_a_decline_a_discount_request_gets_a_polite_answer_not_a_person():
 def test_a_booked_customer_asking_for_a_quote_goes_to_a_person():
     action, _ = decide({"stage": "booked", "lead": QUALIFIED}, a(intent="needs_human"), "send me a quote")
     assert action == "handoff"
+
+
+def test_invalid_json_from_the_model_is_asked_again_once(graph_service):
+    svc = graph_service([{"intent": "not-an-intent"}, analysis(service="kitchen")])
+    result = svc.handle("c1", "kitchen please")
+    assert (result.action, result.llm_calls) == ("ask", 3)  # bad JSON, retry, reply
+    assert "not valid" in svc.deps.llm.prompts[1]
+
+
+@pytest.mark.parametrize(("text", "budget_kept"), [
+    ("Wednesday Oct 21 at 9:00 AM works perfect for me!", False),
+    ("somewhere between fifty and sixty thousand dollars", True),
+    ("around $45,000", True),
+    ("maybe 40k?", True),
+    ("we have 30000 saved", True),
+    ("presupuesto de 30.000", True),
+])
+def test_a_budget_must_appear_in_the_message(text, budget_kept):
+    from app.agents.graph_agent import drop_ungrounded
+
+    assert (drop_ungrounded(a(budget_usd=30_000), text).budget_usd is not None) == budget_kept
+
+
+def test_a_zip_must_appear_in_the_message():
+    from app.agents.graph_agent import drop_ungrounded
+
+    assert drop_ungrounded(a(zip_code="78704"), "We're in 78704, Austin").zip_code == "78704"
+    assert drop_ungrounded(a(zip_code="78704"), "We live in south Austin").zip_code is None
+
+
+def test_a_misread_time_does_not_overwrite_a_known_budget():
+    lead = {**QUALIFIED, "budget_usd": 60_000, "name": "Tom", "phone": "5125550103"}
+    offered = ["2026-10-20T09:00:00", "2026-10-21T09:00:00"]
+    action, upd = decide({"lead": lead, "offered": offered}, a(intent="choose_slot", budget_usd=21),
+                         "Wednesday Oct 21 at 9:00 AM works perfect for me!")
+    assert (action, upd["slot"]) == ("book", offered[1])
+    assert upd["lead"]["budget_usd"] == 60_000
+
+
+def test_the_customers_words_beat_a_wrong_slot_number_from_the_model():
+    lead = {**QUALIFIED, "name": "Kevin", "phone": "5125550105"}
+    action, upd = decide({"lead": lead, "offered": OFFER}, a(intent="choose_slot", chosen_slot=1),
+                         "Option 2, Wednesday Oct 21 at 1:00 PM, works great for me.")
+    assert (action, upd["slot"]) == ("book", OFFER[1])
+
+
+def test_a_phone_number_is_not_a_budget():
+    from app.agents.graph_agent import drop_ungrounded
+
+    assert drop_ungrounded(a(budget_usd=108), "Me llamo Carmen Ruiz y mi número es 512-555-0108").budget_usd is None
+    assert drop_ungrounded(a(budget_usd=5_550), "call 512-555-0108").budget_usd is None
+    assert drop_ungrounded(a(budget_usd=30_000), "$30,000 and my phone is 512-555-0108").budget_usd == 30_000
+
+
+def test_a_price_question_keeps_the_sale_going():
+    action, _ = decide({"lead": {"service": "bathroom", "zip_code": "78641", "timeline_weeks": 10,
+                                 "decision_maker": True}},
+                       a(intent="wants_quote"), "Is my $12,000 budget really going to be enough?")
+    assert action != "handoff"
+    parents_house = {"service": "kitchen", "zip_code": "78757", "decision_maker": False}
+    assert decide({"lead": parents_house}, a(intent="wants_quote"), "Could you give me an estimate?")[0] == "disqualify"
+
+
+@pytest.mark.parametrize("raw", ["≡512-555-0199", "(512) 555 0199", "+1 512.555.0199", "5125550199"])
+def test_phones_are_stored_in_one_format(raw):
+    from app.agents.graph_agent import merge_facts
+
+    assert merge_facts({}, a(phone=raw))["phone"] == "512-555-0199"
