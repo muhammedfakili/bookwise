@@ -1,4 +1,4 @@
-"""LeadPilot screens: the customer chat and the team's admin view.
+"""BookWise screens: the customer chat and the team's admin view.
 
     uv run streamlit run ui/app.py     (needs the API: uv run uvicorn app.api:app --port 8000)
 """
@@ -13,7 +13,7 @@ import streamlit as st
 # `streamlit run ui/app.py` puts ui/ on the path; the pages import `ui.client`, so add the root too.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-st.set_page_config(page_title="LeadPilot", page_icon=":material/support_agent:", layout="wide")
+st.set_page_config(page_title="BookWise", page_icon=":material/support_agent:", layout="wide")
 
 page = st.navigation(
     [

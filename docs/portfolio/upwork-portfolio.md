@@ -1,15 +1,15 @@
-# Upwork portfolio entry — LeadPilot
+# Upwork portfolio entry — BookWise
 
 Same layout as the other projects: title, role, 5 skills, one paragraph (600-character limit), cover + images.
 
 **Title** (62 characters)
-LeadPilot — AI Sales Chat Agent: Qualify Leads, Book, Hand Off
+BookWise — AI Sales Chat Agent: Qualify Leads, Book, Hand Off
 
 **Role**
 AI Engineer
 
 **Skills**
-AI Agent Development · LangChain · Python · FastAPI · Chatbot Development
+AI Agent Development · LangChain · Python · Chatbot Development · LangGraph
 
 **Description** (480 / 600 characters)
 A chat agent for a remodeling company (web chat, WhatsApp-ready): asks the qualifying questions, declines leads that don't fit, books a free consultation, writes the CRM and hands complaints or discount requests to a person. Built with LangGraph: the model reads, code decides. Tested on 30 simulated customers against a one-prompt tool-calling agent: 28/30 vs 30/30 correct, 0 wrong bookings each, booked leads' CRM data 97% vs 79% complete. FastAPI, Streamlit, Docker, 98 tests.

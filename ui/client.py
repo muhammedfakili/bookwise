@@ -1,4 +1,4 @@
-"""Talks to the LeadPilot API. The UI never imports app/ -- it could run on another machine."""
+"""Talks to the BookWise API. The UI never imports app/ -- it could run on another machine."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import os
 
 import httpx
 
-API_URL = os.environ.get("LEADPILOT_API_URL", "http://localhost:8000")
+API_URL = os.environ.get("BOOKWISE_API_URL", "http://localhost:8000")
 API_KEY = os.environ.get("APP_API_KEY")
 
 

@@ -11,7 +11,7 @@ services:
       - path: .env  # GOOGLE_API_KEY (or another provider), APP_API_KEY. Never copied into the image.
         required: false
     volumes:
-      - leadpilot-data:/data  # leads, bookings, handoffs and conversation state survive restarts
+      - bookwise-data:/data  # leads, bookings, handoffs and conversation state survive restarts
     ports:
       - "8000:8000"
     healthcheck:
@@ -26,7 +26,7 @@ services:
       context: .
       dockerfile: ui/Dockerfile
     environment:
-      LEADPILOT_API_URL: http://api:8000
+      BOOKWISE_API_URL: http://api:8000
       APP_API_KEY: ${APP_API_KEY:-}  # only this one value from .env; the LLM key stays with the API
     ports:
       - "8501:8501"
@@ -35,4 +35,4 @@ services:
         condition: service_healthy
 
 volumes:
-  leadpilot-data:
+  bookwise-data:

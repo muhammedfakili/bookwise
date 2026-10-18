@@ -73,7 +73,7 @@ for side in ("top", "right"):
 for side in ("left", "bottom"):
     ax.spines[side].set_color(MUTED)
 ax.bar(0, 0, color=GREY, label=f"One prompt + free tool calling  ·  {base['wrong']} wrong bookings")
-ax.bar(0, 0, color=BLUE, label=f"LeadPilot: LangGraph, rules in code  ·  {graph['wrong']} wrong bookings")
+ax.bar(0, 0, color=BLUE, label=f"BookWise: LangGraph, rules in code  ·  {graph['wrong']} wrong bookings")
 ax.legend(loc="upper right", bbox_to_anchor=(1.0, 1.13), frameon=False, labelcolor=FG, fontsize=13, ncol=2)
 fig.suptitle("30 simulated customers, same model, two agent designs", color=FG, fontsize=22, fontweight="bold",
              x=0.06, ha="left", y=0.96)

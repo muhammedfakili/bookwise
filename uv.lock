@@ -95,6 +95,59 @@ wheels = [
 ]
 
 [[package]]
+name = "bookwise"
+version = "0.1.0"
+source = { virtual = "." }
+dependencies = [
+    { name = "anthropic" },
+    { name = "fastapi" },
+    { name = "google-genai" },
+    { name = "httpx" },
+    { name = "langgraph" },
+    { name = "langgraph-checkpoint-sqlite" },
+    { name = "openai" },
+    { name = "pydantic-settings" },
+    { name = "uvicorn", extra = ["standard"] },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "matplotlib" },
+    { name = "pytest" },
+    { name = "ruff" },
+]
+ui = [
+    { name = "httpx" },
+    { name = "pandas" },
+    { name = "streamlit" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "anthropic", specifier = ">=1.13.0" },
+    { name = "fastapi", specifier = ">=0.143.2" },
+    { name = "google-genai", specifier = ">=2.29.0" },
+    { name = "httpx", specifier = ">=0.28.1" },
+    { name = "langgraph", specifier = ">=1.0.0" },
+    { name = "langgraph-checkpoint-sqlite", specifier = ">=3.0.0" },
+    { name = "openai", specifier = ">=3.29.0" },
+    { name = "pydantic-settings", specifier = ">=2.15.0" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.54.0" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "matplotlib", specifier = ">=3.11.2" },
+    { name = "pytest", specifier = ">=9.1.1" },
+    { name = "ruff", specifier = ">=0.17.0" },
+]
+ui = [
+    { name = "httpx", specifier = ">=0.28.1" },
+    { name = "pandas", specifier = ">=2.3.0" },
+    { name = "streamlit", specifier = ">=1.66.0" },
+]
+
+[[package]]
 name = "certifi"
 version = "2026.7.22"
 source = { registry = "https://pypi.org/simple" }
@@ -1203,59 +1256,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/f8/c3/a9a98d7adf573fdd5ea5c92cadbc26d7c597ab36f4dc31c093eb19507808/langsmith-0.14.11.tar.gz", hash = "sha256:d9e7ffe587e12ce51573cab654d02e84feb924d3b1f582274c4b1412ebeabf4c", size = 5020659, upload-time = "2026-10-16T07:16:56.865Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e2/1d/b683b3d8777e625e021efeaaf72dc04f709be59e6a5f2d65725cebaedcfb/langsmith-0.14.11-py3-none-any.whl", hash = "sha256:9ecca7633df228ef2c44563f7187e426b8a79e7c5c2351c5dd8c9074c61512e7", size = 869018, upload-time = "2026-10-16T07:16:54.634Z" },
-]
-
-[[package]]
-name = "leadpilot"
-version = "0.1.0"
-source = { virtual = "." }
-dependencies = [
-    { name = "anthropic" },
-    { name = "fastapi" },
-    { name = "google-genai" },
-    { name = "httpx" },
-    { name = "langgraph" },
-    { name = "langgraph-checkpoint-sqlite" },
-    { name = "openai" },
-    { name = "pydantic-settings" },
-    { name = "uvicorn", extra = ["standard"] },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "matplotlib" },
-    { name = "pytest" },
-    { name = "ruff" },
-]
-ui = [
-    { name = "httpx" },
-    { name = "pandas" },
-    { name = "streamlit" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "anthropic", specifier = ">=1.13.0" },
-    { name = "fastapi", specifier = ">=0.143.2" },
-    { name = "google-genai", specifier = ">=2.29.0" },
-    { name = "httpx", specifier = ">=0.28.1" },
-    { name = "langgraph", specifier = ">=1.0.0" },
-    { name = "langgraph-checkpoint-sqlite", specifier = ">=3.0.0" },
-    { name = "openai", specifier = ">=3.29.0" },
-    { name = "pydantic-settings", specifier = ">=2.15.0" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.54.0" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "matplotlib", specifier = ">=3.11.2" },
-    { name = "pytest", specifier = ">=9.1.1" },
-    { name = "ruff", specifier = ">=0.17.0" },
-]
-ui = [
-    { name = "httpx", specifier = ">=0.28.1" },
-    { name = "pandas", specifier = ">=2.3.0" },
-    { name = "streamlit", specifier = ">=1.66.0" },
 ]
 
 [[package]]

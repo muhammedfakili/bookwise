@@ -12,7 +12,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = PROJECT_ROOT / "data"
 
 # Gemini Flash-Lite is free and fast (500 requests/day), Claude is the paid upgrade,
-# NVIDIA's hosted NIM models are free with no daily cap (the evaluation runs on them).
+# NVIDIA's hosted NIM models are free per minute (the evaluation runs on Gemma 4 via Gemini, see eval/).
 DEFAULT_MODELS = {
     "gemini": "gemini-3.5-flash-lite",
     "anthropic": "claude-opus-5",
@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     agent: AgentKind = "graph"
 
     # SQLite file for leads, bookings, handoffs and transcripts; graph checkpoints sit next to it.
-    db_path: Path = DATA_DIR / "leadpilot.db"
+    db_path: Path = DATA_DIR / "bookwise.db"
 
     # Freeze the clock (ISO datetime) for demos and the evaluation, so free slots are reproducible.
     clock: datetime | None = None
@@ -47,7 +47,7 @@ class Settings(BaseSettings):
     # Protects the HTTP API. Unset = open (fine on localhost; set it before exposing the API).
     app_api_key: str | None = None
     # WhatsApp Cloud API webhook verification token (GET /webhook/whatsapp handshake).
-    whatsapp_verify_token: str = "leadpilot-dev"
+    whatsapp_verify_token: str = "bookwise-dev"
 
     @property
     def api_key_required(self) -> bool:

@@ -1,5 +1,5 @@
 [project]
-name = "leadpilot"
+name = "bookwise"
 version = "0.1.0"
 description = "Lead qualification and booking agent: LangGraph, tool calling, human handoff, simulated-user evaluation"
 requires-python = ">=3.12"

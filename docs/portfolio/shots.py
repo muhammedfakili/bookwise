@@ -1,4 +1,4 @@
-"""Portfolio images for LeadPilot: cover + screens of the running app (after demo_seed.py).
+"""Portfolio images for BookWise: cover + screens of the running app (after demo_seed.py).
 
 Needs the API and UI running locally (see demo_seed.py for the API command).
 Run:  uv run --with playwright python docs/portfolio/shots.py

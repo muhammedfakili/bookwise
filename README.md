@@ -1,4 +1,4 @@
-# LeadPilot — a sales chat agent that qualifies leads, books consultations and knows when to call a human
+# BookWise — a sales chat agent that qualifies leads, books consultations and knows when to call a human
 
 A prospect writes in the web chat (or on WhatsApp). The agent asks the qualifying questions a good salesperson would ask (what project, where, when, what budget, who decides), declines politely when the lead doesn't fit, books a free consultation when it does, writes everything to the CRM, and hands the conversation to a person when it should: complaints, angry customers, discount or contract questions, reschedules, or when it can't follow.
 
@@ -12,7 +12,7 @@ Measured with 30 simulated customers, each labelled with the outcome the busines
 
 The agent is **Gemma 4 26B**; the customers are played by **Gemini 3.5 Flash-Lite** with a role prompt per persona (both free tier). Every outcome is read from the database (bookings, CRM, handoff queue), never judged by a model. Clock frozen at Monday 2026-10-19 09:00. One run per agent; `eval/results/` has every conversation.
 
-| | One prompt + free tool calling | **LeadPilot graph** (rules in code) |
+| | One prompt + free tool calling | **BookWise graph** (rules in code) |
 |---|---|---|
 | Correct outcome | **30/30 (100%)** | 28/30 (93.3%) |
 | Wrong bookings (unqualified lead, or a time the customer said they can't do) | **0** | **0** |

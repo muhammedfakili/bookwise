@@ -33,7 +33,7 @@ from app.deps import build_deps
 from app.llm import ProviderNotConfigured
 from app.service import ChatService
 
-app = FastAPI(title="LeadPilot", version="1.0",
+app = FastAPI(title="BookWise", version="1.0",
               description="Lead qualification and booking agent with human handoff")
 
 

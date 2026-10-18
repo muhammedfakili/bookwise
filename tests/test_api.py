@@ -71,7 +71,7 @@ def test_whatsapp_webhook_answers_through_the_channel(client):
 
 
 def test_whatsapp_verification_handshake(client):
-    params = {"hub.mode": "subscribe", "hub.verify_token": "leadpilot-dev", "hub.challenge": "42"}
+    params = {"hub.mode": "subscribe", "hub.verify_token": "bookwise-dev", "hub.challenge": "42"}
     assert client.get("/webhook/whatsapp", params=params).text == "42"
     assert client.get("/webhook/whatsapp", params={**params, "hub.verify_token": "x"}).status_code == 403
 

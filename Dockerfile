@@ -10,7 +10,7 @@ ENV UV_COMPILE_BYTECODE=1 \
     UV_PROJECT_ENVIRONMENT=/opt/venv \
     PATH="/opt/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
-    DB_PATH=/data/leadpilot.db
+    DB_PATH=/data/bookwise.db
 
 WORKDIR /app
 
